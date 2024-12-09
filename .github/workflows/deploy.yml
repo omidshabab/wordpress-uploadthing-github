@@ -38,25 +38,61 @@ jobs:
         extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, dom, filter, gd, iconv, json, mysqli
         coverage: none
 
-    - name: Install WordPress
+    # Create public directory if it doesn't exist
+    - name: Create public directory
+      run: mkdir -p public
+
+    # Download and extract WordPress
+    - name: Download WordPress
+      working-directory: public
       run: |
         wget https://wordpress.org/latest.tar.gz
-        tar xzf latest.tar.gz
-        cp -a wordpress/. public/
-        rm -rf wordpress latest.tar.gz
+        tar xzf latest.tar.gz --strip-components=1
+        rm latest.tar.gz
 
+    # Configure WordPress with proper directory context
     - name: Configure WordPress
+      working-directory: public
       run: |
+        # Copy the sample config file
         cp wp-config-sample.php wp-config.php
+        
+        # Replace database configuration
         sed -i "s/database_name_here/$WORDPRESS_DB_NAME/" wp-config.php
         sed -i "s/username_here/$WORDPRESS_DB_USER/" wp-config.php
         sed -i "s/password_here/$WORDPRESS_DB_PASSWORD/" wp-config.php
         sed -i "s/localhost/$WORDPRESS_DB_HOST/" wp-config.php
+        
+        # Add unique keys and salts
+        curl -s https://api.wordpress.org/secret-key/1.1/salt/ >> wp-config.php
+        
+        # Add Uploadthing configuration
+        echo "define('UPLOADTHING_SECRET', getenv('UPLOADTHING_SECRET'));" >> wp-config.php
+        echo "define('UPLOADTHING_APP_ID', getenv('UPLOADTHING_APP_ID'));" >> wp-config.php
 
-    - name: Install Composer Dependencies
-      run: composer install --no-dev --optimize-autoloader
-
-    - name: Install Uploadthing Plugin
+    # Create and configure wp-content directory
+    - name: Setup wp-content
+      working-directory: public
       run: |
         mkdir -p wp-content/plugins/uploadthing
-        cp uploadthing-plugin/* wp-content/plugins/uploadthing/
+        mkdir -p wp-content/uploads
+        chmod 755 wp-content/uploads
+
+    # Install Composer dependencies if you have any
+    - name: Install Composer Dependencies
+      if: hashFiles('composer.json') != ''
+      run: |
+        if [ -f "composer.json" ]; then
+          composer install --no-dev --optimize-autoloader
+        fi
+
+    # Verify WordPress installation
+    - name: Verify Installation
+      working-directory: public
+      run: |
+        echo "WordPress Version:"
+        grep "wp_version =" wp-includes/version.php
+        echo "Directory Structure:"
+        ls -la
+        echo "WordPress Config:"
+        grep "DB_" wp-config.php | grep -v "password"
