@@ -1,0 +1,7 @@
+{
+  "name": "omidshabab/wordpress-github",
+  "description": "WordPress with GitHub Actions and Uploadthing",
+  "require": {
+    "php": ">=8.2"
+  }
+}

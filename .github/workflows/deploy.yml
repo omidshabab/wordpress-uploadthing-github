@@ -1,0 +1,62 @@
+name: WordPress Deployment
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  WORDPRESS_DB_HOST: 127.0.0.1
+  WORDPRESS_DB_NAME: wordpress
+  WORDPRESS_DB_USER: root
+  WORDPRESS_DB_PASSWORD: root
+  UPLOADTHING_SECRET: ${{ secrets.UPLOADTHING_SECRET }}
+  UPLOADTHING_APP_ID: ${{ secrets.UPLOADTHING_APP_ID }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: wordpress
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.2'
+        extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, dom, filter, gd, iconv, json, mysqli
+        coverage: none
+
+    - name: Install WordPress
+      run: |
+        wget https://wordpress.org/latest.tar.gz
+        tar xzf latest.tar.gz
+        cp -a wordpress/. public/
+        rm -rf wordpress latest.tar.gz
+
+    - name: Configure WordPress
+      run: |
+        cp wp-config-sample.php wp-config.php
+        sed -i "s/database_name_here/$WORDPRESS_DB_NAME/" wp-config.php
+        sed -i "s/username_here/$WORDPRESS_DB_USER/" wp-config.php
+        sed -i "s/password_here/$WORDPRESS_DB_PASSWORD/" wp-config.php
+        sed -i "s/localhost/$WORDPRESS_DB_HOST/" wp-config.php
+
+    - name: Install Composer Dependencies
+      run: composer install --no-dev --optimize-autoloader
+
+    - name: Install Uploadthing Plugin
+      run: |
+        mkdir -p wp-content/plugins/uploadthing
+        cp uploadthing-plugin/* wp-content/plugins/uploadthing/
