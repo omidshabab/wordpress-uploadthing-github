@@ -1,11 +1,13 @@
 name: WordPress Docker Deployment to Render
 
+# Trigger deployment on push to main branch or when pull requests are created
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
 
+# Environment variables available to all jobs
 env:
   DOCKER_IMAGE_NAME: your-docker-username/wordpress-render
 
@@ -14,53 +16,121 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    # Create public directory and download WordPress
-    - name: Setup WordPress
-      run: |
-        mkdir -p public
-        cd public
-        wget https://wordpress.org/latest.tar.gz
-        tar xzf latest.tar.gz --strip-components=1
-        rm latest.tar.gz
-        
-        # Create wp-config.php with environment variables
-        cp wp-config-sample.php wp-config.php
-        sed -i 's/database_name_here/getenv("WORDPRESS_DB_NAME")/' wp-config.php
-        sed -i 's/username_here/getenv("WORDPRESS_DB_USER")/' wp-config.php
-        sed -i 's/password_here/getenv("WORDPRESS_DB_PASSWORD")/' wp-config.php
-        sed -i 's/localhost/getenv("WORDPRESS_DB_HOST")/' wp-config.php
+      # Set up WordPress installation in public directory
+      - name: Setup WordPress
+        run: |
+          # Create public directory if it doesn't exist
+          mkdir -p public
+          cd public
 
-    # Create render.yaml for Render configuration
-    - name: Create Render config
-      run: |
-        cat > render.yaml <<EOL
-        services:
-          - type: web
-            name: wordpress
-            env: docker
-            dockerfilePath: ./Dockerfile
-            envVars:
-              - key: WORDPRESS_DB_HOST
-                sync: false
-              - key: WORDPRESS_DB_NAME
-                sync: false
-              - key: WORDPRESS_DB_USER
-                sync: false
-              - key: WORDPRESS_DB_PASSWORD
-                sync: false
-              - key: UPLOADTHING_SECRET
-                sync: false
-              - key: UPLOADTHING_APP_ID
-                sync: false
-            disk:
-              name: wordpress-data
-              mountPath: /var/www/html/wp-content/uploads
-              sizeGB: 1
-        EOL
+          # Download and extract latest WordPress
+          wget https://wordpress.org/latest.tar.gz
+          tar xzf latest.tar.gz --strip-components=1
+          rm latest.tar.gz
 
-    # Deploy to Render using deploy hook
-    - name: Deploy to Render
-      run: |
-        curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          # Create .htaccess file for proper URL rewriting
+          cat > .htaccess <<EOL
+          # BEGIN WordPress
+          <IfModule mod_rewrite.c>
+          RewriteEngine On
+          RewriteBase /
+          RewriteRule ^index\.php$ - [L]
+          RewriteCond %{REQUEST_FILENAME} !-f
+          RewriteCond %{REQUEST_FILENAME} !-d
+          RewriteRule . /index.php [L]
+          </IfModule>
+          # END WordPress
+          EOL
+
+          # Ensure uploads directory exists with correct permissions
+          mkdir -p wp-content/uploads
+          chmod 755 wp-content/uploads
+
+      # Configure WordPress with proper environment variable handling
+      - name: Setup WordPress Config
+        run: |
+          cd public
+          cp wp-config-sample.php wp-config.php
+          
+          # Configure database settings
+          sed -i "s/define( 'DB_NAME', '.*' );/define( 'DB_NAME', \$_ENV['WORDPRESS_DB_NAME'] );/" wp-config.php
+          sed -i "s/define( 'DB_USER', '.*' );/define( 'DB_USER', \$_ENV['WORDPRESS_DB_USER'] );/" wp-config.php
+          sed -i "s/define( 'DB_PASSWORD', '.*' );/define( 'DB_PASSWORD', \$_ENV['WORDPRESS_DB_PASSWORD'] );/" wp-config.php
+          sed -i "s/define( 'DB_HOST', '.*' );/define( 'DB_HOST', \$_ENV['WORDPRESS_DB_HOST'] );/" wp-config.php
+          
+          # Add WordPress security keys
+          curl -s https://api.wordpress.org/secret-key/1.1/salt/ >> wp-config.php
+          
+          # Add debug settings for troubleshooting
+          echo "define( 'WP_DEBUG', true );" >> wp-config.php
+          echo "define( 'WP_DEBUG_LOG', true );" >> wp-config.php
+          echo "define( 'WP_DEBUG_DISPLAY', false );" >> wp-config.php
+          
+          # Add Uploadthing configuration
+          echo "define( 'UPLOADTHING_SECRET', \$_ENV['UPLOADTHING_SECRET'] );" >> wp-config.php
+          echo "define( 'UPLOADTHING_APP_ID', \$_ENV['UPLOADTHING_APP_ID'] );" >> wp-config.php
+
+      # Create Render configuration file
+      - name: Create Render config
+        run: |
+          cat > render.yaml <<EOL
+          services:
+            - type: web
+              name: wordpress
+              env: docker
+              dockerfilePath: ./Dockerfile
+              healthCheckPath: /
+              envVars:
+                - key: WORDPRESS_DB_HOST
+                  sync: false
+                - key: WORDPRESS_DB_NAME
+                  sync: false
+                - key: WORDPRESS_DB_USER
+                  sync: false
+                - key: WORDPRESS_DB_PASSWORD
+                  sync: false
+                - key: UPLOADTHING_SECRET
+                  sync: false
+                - key: UPLOADTHING_APP_ID
+                  sync: false
+              disk:
+                name: wordpress-data
+                mountPath: /var/www/html/wp-content/uploads
+                sizeGB: 1
+              startCommand: |
+                apache2-foreground
+          EOL
+
+      # Verify configuration files exist
+      - name: Verify setup
+        run: |
+          if [ ! -f "public/wp-config.php" ]; then
+            echo "Error: wp-config.php not found"
+            exit 1
+          fi
+          if [ ! -f "render.yaml" ]; then
+            echo "Error: render.yaml not found"
+            exit 1
+          fi
+          if [ ! -f "public/.htaccess" ]; then
+            echo "Error: .htaccess not found"
+            exit 1
+          fi
+
+      # Deploy to Render
+      - name: Deploy to Render
+        run: |
+          # Attempt deployment
+          DEPLOY_RESPONSE=$(curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK_URL }})
+          
+          # Check if deployment was triggered successfully
+          if [[ $DEPLOY_RESPONSE == *"deploy"* ]]; then
+            echo "Deployment triggered successfully"
+          else
+            echo "Error triggering deployment"
+            echo "Response: $DEPLOY_RESPONSE"
+            exit 1
+          fi
