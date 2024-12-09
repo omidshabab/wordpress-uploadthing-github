@@ -1,4 +1,4 @@
-name: WordPress Deployment
+name: WordPress Docker Deployment to Render
 
 on:
   push:
@@ -7,92 +7,60 @@ on:
     branches: [ main ]
 
 env:
-  WORDPRESS_DB_HOST: 127.0.0.1
-  WORDPRESS_DB_NAME: wordpress
-  WORDPRESS_DB_USER: root
-  WORDPRESS_DB_PASSWORD: root
-  UPLOADTHING_SECRET: ${{ secrets.UPLOADTHING_SECRET }}
-  UPLOADTHING_APP_ID: ${{ secrets.UPLOADTHING_APP_ID }}
+  DOCKER_IMAGE_NAME: your-docker-username/wordpress-render
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
-
-    services:
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_DATABASE: wordpress
-          MYSQL_ROOT_PASSWORD: root
-        ports:
-          - 3306:3306
-        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
-
+    
     steps:
     - uses: actions/checkout@v3
 
-    - name: Setup PHP
-      uses: shivammathur/setup-php@v2
-      with:
-        php-version: '8.2'
-        extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, dom, filter, gd, iconv, json, mysqli
-        coverage: none
-
-    # Create public directory if it doesn't exist
-    - name: Create public directory
-      run: mkdir -p public
-
-    # Download and extract WordPress
-    - name: Download WordPress
-      working-directory: public
+    # Create public directory and download WordPress
+    - name: Setup WordPress
       run: |
+        mkdir -p public
+        cd public
         wget https://wordpress.org/latest.tar.gz
         tar xzf latest.tar.gz --strip-components=1
         rm latest.tar.gz
-
-    # Configure WordPress with proper directory context
-    - name: Configure WordPress
-      working-directory: public
-      run: |
-        # Copy the sample config file
+        
+        # Create wp-config.php with environment variables
         cp wp-config-sample.php wp-config.php
-        
-        # Replace database configuration
-        sed -i "s/database_name_here/$WORDPRESS_DB_NAME/" wp-config.php
-        sed -i "s/username_here/$WORDPRESS_DB_USER/" wp-config.php
-        sed -i "s/password_here/$WORDPRESS_DB_PASSWORD/" wp-config.php
-        sed -i "s/localhost/$WORDPRESS_DB_HOST/" wp-config.php
-        
-        # Add unique keys and salts
-        curl -s https://api.wordpress.org/secret-key/1.1/salt/ >> wp-config.php
-        
-        # Add Uploadthing configuration
-        echo "define('UPLOADTHING_SECRET', getenv('UPLOADTHING_SECRET'));" >> wp-config.php
-        echo "define('UPLOADTHING_APP_ID', getenv('UPLOADTHING_APP_ID'));" >> wp-config.php
+        sed -i 's/database_name_here/getenv("WORDPRESS_DB_NAME")/' wp-config.php
+        sed -i 's/username_here/getenv("WORDPRESS_DB_USER")/' wp-config.php
+        sed -i 's/password_here/getenv("WORDPRESS_DB_PASSWORD")/' wp-config.php
+        sed -i 's/localhost/getenv("WORDPRESS_DB_HOST")/' wp-config.php
 
-    # Create and configure wp-content directory
-    - name: Setup wp-content
-      working-directory: public
+    # Create render.yaml for Render configuration
+    - name: Create Render config
       run: |
-        mkdir -p wp-content/plugins/uploadthing
-        mkdir -p wp-content/uploads
-        chmod 755 wp-content/uploads
+        cat > render.yaml <<EOL
+        services:
+          - type: web
+            name: wordpress
+            env: docker
+            dockerfilePath: ./Dockerfile
+            envVars:
+              - key: WORDPRESS_DB_HOST
+                sync: false
+              - key: WORDPRESS_DB_NAME
+                sync: false
+              - key: WORDPRESS_DB_USER
+                sync: false
+              - key: WORDPRESS_DB_PASSWORD
+                sync: false
+              - key: UPLOADTHING_SECRET
+                sync: false
+              - key: UPLOADTHING_APP_ID
+                sync: false
+            disk:
+              name: wordpress-data
+              mountPath: /var/www/html/wp-content/uploads
+              sizeGB: 1
+        EOL
 
-    # Install Composer dependencies if you have any
-    - name: Install Composer Dependencies
-      if: hashFiles('composer.json') != ''
+    # Deploy to Render using deploy hook
+    - name: Deploy to Render
       run: |
-        if [ -f "composer.json" ]; then
-          composer install --no-dev --optimize-autoloader
-        fi
-
-    # Verify WordPress installation
-    - name: Verify Installation
-      working-directory: public
-      run: |
-        echo "WordPress Version:"
-        grep "wp_version =" wp-includes/version.php
-        echo "Directory Structure:"
-        ls -la
-        echo "WordPress Config:"
-        grep "DB_" wp-config.php | grep -v "password"
+        curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
